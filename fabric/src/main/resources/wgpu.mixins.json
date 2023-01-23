@@ -32,7 +32,8 @@
     "render.WindowMixin",
     "render.WorldRendererMixin",
     "world.BlockStateMixin",
-    "render.BuiltChunkMixin"
+    "render.BuiltChunkMixin",
+    "render.CubeMapRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

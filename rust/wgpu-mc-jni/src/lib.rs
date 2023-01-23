@@ -1086,7 +1086,7 @@ pub fn setProjectionMatrix(env: JNIEnv, _class: JClass, float_array: jfloatArray
 
     let slice_4x4: [[f32; 4]; 4] = *bytemuck::from_bytes(bytemuck::cast_slice(&converted));
 
-    let matrix = Matrix4::from(slice_4x4) * Matrix4::from_nonuniform_scale(1.0, 1.0, 0.0);
+    let matrix = Matrix4::from(slice_4x4);
 
     GL_COMMANDS.write().0.push(GLCommand::SetMatrix(matrix));
 }
