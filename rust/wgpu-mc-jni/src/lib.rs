@@ -51,7 +51,6 @@ use crate::palette::{IdList, JavaPalette, PALETTE_STORAGE};
 use crate::pia::{PackedIntegerArray, PIA_STORAGE};
 use crate::settings::Settings;
 
-mod alloc;
 pub mod entity;
 mod gl;
 mod lighting;
@@ -764,7 +763,8 @@ pub fn setCursorLocked(_env: JNIEnv, _class: JClass, locked: jboolean) {
     if let Some(window) = WINDOW.get() {
         if locked == JNI_TRUE {
             window.set_cursor_visible(false);
-            window.set_cursor_grab(CursorGrabMode::Confined)
+            window
+                .set_cursor_grab(CursorGrabMode::Confined)
                 .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Locked))
                 .unwrap();
         } else {

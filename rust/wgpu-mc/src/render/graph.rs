@@ -5,25 +5,28 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::ops::Mul;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use cgmath::{Matrix3, Matrix4, SquareMatrix};
 use parking_lot::RwLock;
+use serde::de::IntoDeserializer;
 use treeculler::{BVol, Frustum, Vec3, AABB};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
-    BufferUsages, ColorTargetState, CommandEncoderDescriptor, DepthStencilState, Face,
-    FragmentState, FrontFace, LoadOp, Operations, PipelineLayoutDescriptor, PolygonMode,
-    PrimitiveState, PrimitiveTopology, PushConstantRange, RenderPass, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, ShaderStages, StoreOp, SurfaceConfiguration, TextureFormat,
-    VertexBufferLayout, VertexState,
+    BlendComponent, BlendFactor, BlendOperation, BufferUsages, Color, ColorTargetState,
+    CommandEncoderDescriptor, DepthStencilState, Face, FragmentState, FrontFace, LoadOp,
+    Operations, PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology,
+    PushConstantRange, RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderStages, StoreOp,
+    SurfaceConfiguration, TextureFormat, VertexBufferLayout, VertexState,
 };
 
 use crate::mc::chunk::{Chunk, ChunkBuffers, ChunkPos, CHUNK_SECTION_HEIGHT, SECTIONS_PER_CHUNK};
 use crate::mc::entity::{BundledEntityInstances, InstanceVertex};
 use crate::mc::resource::ResourcePath;
+use crate::mc::SkyData;
 use crate::render::entity::EntityVertex;
 use crate::render::pipeline::{QuadVertex, BLOCK_ATLAS};
 use crate::render::shader::WgslShader;
@@ -34,6 +37,8 @@ use crate::render::shaderpack::{
 use crate::texture::{BindableTexture, TextureHandle};
 use crate::util::{BindableBuffer, WmArena};
 use crate::WmRenderer;
+
+use super::sky::SunMoonVertex;
 
 pub struct GeometryInfo<'pass, 'resource: 'pass, 'renderer> {
     pub wm: &'renderer WmRenderer,
@@ -160,6 +165,7 @@ pub struct ShaderGraph {
     pub pipelines: HashMap<String, RenderPipeline>,
     pub resources: HashMap<String, CustomResource>,
     pub geometry: HashMap<String, Box<dyn GeometryCallback>>,
+    sun: Option<wgpu::Buffer>,
     quad: Option<wgpu::Buffer>,
     query_results: Option<wgpu::Buffer>,
 }
@@ -175,6 +181,7 @@ impl ShaderGraph {
             pipelines: HashMap::new(),
             resources,
             geometry,
+            sun: None,
             quad: None,
             query_results: None,
         }
@@ -191,7 +198,8 @@ impl ShaderGraph {
         resource_types.insert("wm_ssbo_entity_part_transforms".into(), "ssbo".into());
         resource_types.insert("wm_ssbo_entity_part_overlays".into(), "ssbo".into());
         resource_types.insert("wm_texture_entities".into(), "texture".into());
-
+        resource_types.insert("wm_texture_sky_sun".into(), "texture".into());
+        resource_types.insert("wm_texture_sky_moon".into(), "texture".into());
         resource_types.insert("wm_ssbo_chunk_vertices".into(), "ssbo".into());
         resource_types.insert("wm_ssbo_chunk_indices".into(), "ssbo".into());
 
@@ -215,6 +223,16 @@ impl ShaderGraph {
                     contents: bytemuck::cast_slice(&[
                         -1.0f32, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0,
                     ]),
+                    usage: BufferUsages::VERTEX,
+                }),
+        );
+
+        self.sun = Some(
+            wm.wgpu_state
+                .device
+                .create_buffer_init(&BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::cast_slice(&SunMoonVertex::load_vertex_sun()),
                     usage: BufferUsages::VERTEX,
                 }),
         );
@@ -317,6 +335,10 @@ impl ShaderGraph {
                                             stages: ShaderStages::VERTEX,
                                             range: *offset as u32..*offset as u32 + 4,
                                         },
+                                        "wm_pc_sky_data" => PushConstantRange {
+                                            stages: ShaderStages::VERTEX_FRAGMENT,
+                                            range: *offset as u32..*offset as u32 + 20,
+                                        },
                                         _ => unimplemented!("Unknown push constant resource value"),
                                     })
                                     .collect::<Vec<_>>(),
@@ -328,6 +350,7 @@ impl ShaderGraph {
                             Some(vec![EntityVertex::desc(), InstanceVertex::desc()])
                         }
                         "wm_geo_quad" => Some(vec![QuadVertex::desc()]),
+                        "wm_geo_sun_moon" => Some(vec![SunMoonVertex::desc()]),
                         _ => {
                             if let Some(additional_geometry) = &mut additional_geometry {
                                 Some(additional_geometry.remove(&definition.geometry).unwrap())
@@ -389,6 +412,20 @@ impl ShaderGraph {
                                                 }
                                                 "premultiplied_alpha_blending" => {
                                                     wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
+                                                }
+                                                "color_add_alpha_blending" => {
+                                                    wgpu::BlendState {
+                                                        color: BlendComponent {
+                                                            src_factor: BlendFactor::SrcAlpha,
+                                                            dst_factor: BlendFactor::One,
+                                                            operation: BlendOperation::Add,
+                                                        },
+                                                        alpha: BlendComponent {
+                                                            src_factor: BlendFactor::One,
+                                                            dst_factor: BlendFactor::Zero,
+                                                            operation: BlendOperation::Add,
+                                                        },
+                                                    }
                                                 }
                                                 _ => unimplemented!("Unknown blend state"),
                                             }),
@@ -666,7 +703,6 @@ impl ShaderGraph {
         entity_instances: &HashMap<String, BundledEntityInstances>,
     ) {
         let arena = WmArena::new(1024);
-
         let mut encoder = wm
             .wgpu_state
             .device
@@ -683,6 +719,19 @@ impl ShaderGraph {
 
         let texture_handles = wm.texture_handles.read();
 
+        //update moon phase
+        let moon = Some(
+            wm.wgpu_state
+                .device
+                .create_buffer_init(&BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::cast_slice(&SunMoonVertex::load_vertex_moon(
+                        wm.mc.sky_data.load().moon_phase,
+                    )),
+                    usage: BufferUsages::VERTEX,
+                }),
+        );
+
         //The first render pass that uses the framebuffer's depth buffer should clear it
         let mut should_clear_depth = true;
 
@@ -696,13 +745,18 @@ impl ShaderGraph {
             .unwrap();
         let view_matrix = self
             .resources
-            .get("wm_mat4_view")
+            .get("wm_mat4_terrain_transformation")
+            .unwrap()
+            .get_mat4()
+            .unwrap();
+        let model_matrix = self
+            .resources
+            .get("wm_mat4_model")
             .unwrap()
             .get_mat4()
             .unwrap();
 
         let frustum = Frustum::from_modelview_projection((projection_matrix * view_matrix).into());
-
         for (name, config) in (&self.pack.pipelines.pipelines).into_iter() {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None, // TODO maybe use the pipeline name or something? for easier debugging if needed
@@ -779,7 +833,7 @@ impl ShaderGraph {
             });
 
             render_pass.set_pipeline(self.pipelines.get(name).unwrap());
-
+            let sky_data = &wm.mc.sky_data;
             match &config.geometry[..] {
                 "wm_geo_terrain" => {
                     let layers = wm.pipelines.load().chunk_layers.load();
@@ -830,6 +884,7 @@ impl ShaderGraph {
                                     chunk_offset,
                                     Some(section_index),
                                     None,
+                                    Some(&sky_data),
                                 );
 
                                 render_pass.draw(baked_layer.clone(), 0..1);
@@ -847,10 +902,78 @@ impl ShaderGraph {
                         chunk_offset,
                         None,
                         None,
+                        Some(&sky_data),
                     );
 
                     render_pass.set_pipeline(self.pipelines.get(name).unwrap());
                     render_pass.set_vertex_buffer(0, self.quad.as_ref().unwrap().slice(..));
+                    render_pass.draw(0..6, 0..1);
+                }
+                "wm_geo_sun_moon" => {
+                    let augmented_resources = resource_borrow
+                        .clone()
+                        .into_iter()
+                        .chain([
+                            (
+                                &*arena.alloc("wm_texture_sky_sun".into()),
+                                &*arena.alloc(CustomResource {
+                                    update: None,
+                                    data: Arc::new(ResourceInternal::Texture(
+                                        TextureResource::Bindable(Arc::new(ArcSwap::new(
+                                            sky_data
+                                                .load()
+                                                .textures
+                                                .get("wm_texture_sky_sun")
+                                                .unwrap()
+                                                .clone(),
+                                        ))),
+                                        false,
+                                    )),
+                                }),
+                            ),
+                            (
+                                &*arena.alloc("wm_texture_sky_moon".into()),
+                                &*arena.alloc(CustomResource {
+                                    update: None,
+                                    data: Arc::new(ResourceInternal::Texture(
+                                        TextureResource::Bindable(Arc::new(ArcSwap::new(
+                                            sky_data
+                                                .load()
+                                                .textures
+                                                .get("wm_texture_sky_moon")
+                                                .unwrap()
+                                                .clone(),
+                                        ))),
+                                        false,
+                                    )),
+                                }),
+                            ),
+                        ])
+                        .collect();
+
+                    bind_uniforms(
+                        config,
+                        arena.alloc(augmented_resources),
+                        &arena,
+                        &mut render_pass,
+                        None,
+                    );
+                    set_push_constants(
+                        config,
+                        &mut render_pass,
+                        None,
+                        surface_config,
+                        chunk_offset,
+                        None,
+                        None,
+                        Some(&sky_data),
+                    );
+
+                    render_pass.set_pipeline(self.pipelines.get(name).unwrap());
+                    render_pass.set_vertex_buffer(0, self.sun.as_ref().unwrap().slice(..));
+                    render_pass.draw(0..6, 0..1);
+
+                    render_pass.set_vertex_buffer(0, moon.as_ref().unwrap().slice(..));
                     render_pass.draw(0..6, 0..1);
                 }
                 "wm_geo_entities" => {
@@ -912,6 +1035,7 @@ impl ShaderGraph {
                             chunk_offset,
                             None,
                             Some(entity.parts.len() as u32),
+                            Some(&sky_data),
                         );
 
                         render_pass
@@ -939,7 +1063,6 @@ impl ShaderGraph {
                 }
             };
         }
-
         wm.wgpu_state.queue.submit([encoder.finish()]);
     }
 }
@@ -1002,7 +1125,9 @@ pub fn set_push_constants(
     chunk_offset: ChunkPos,
     section_y: Option<usize>,
     parts_per_entity: Option<u32>,
+    sky_data: Option<&ArcSwap<SkyData>>,
 ) {
+    let sky = sky_data.unwrap().load();
     pipeline
         .push_constants
         .iter()
@@ -1030,6 +1155,17 @@ pub fn set_push_constants(
                 ShaderStages::VERTEX,
                 *offset as u32,
                 bytemuck::cast_slice(&[parts_per_entity.unwrap()]),
+            ),
+            "wm_pc_sky_data" => render_pass.set_push_constants(
+                ShaderStages::VERTEX_FRAGMENT,
+                *offset as u32,
+                bytemuck::cast_slice(&[
+                    sky.color_r,
+                    sky.color_g,
+                    sky.color_b,
+                    sky.angle,
+                    sky.brightness,
+                ]),
             ),
             _ => unimplemented!("Unknown push constant resource value"),
         });
