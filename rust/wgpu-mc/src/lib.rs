@@ -42,6 +42,7 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::mc::entity::BundledEntityInstances;
 use arc_swap::ArcSwap;
 pub use minecraft_assets;
 pub use naga;
@@ -49,16 +50,15 @@ use parking_lot::RwLock;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 pub use wgpu;
 use wgpu::{
-    BindGroupDescriptor, BindGroupEntry, BufferDescriptor, Extent3d, PresentMode
+    BindGroupDescriptor, BindGroupEntry, BufferDescriptor, Extent3d, PresentMode,
+    SurfaceConfiguration,
 };
-use wgpu::util::StagingBelt;
 
-use crate::mc::entity::BundledEntityInstances;
-use crate::mc::MinecraftState;
 use crate::mc::resource::ResourceProvider;
+use crate::mc::MinecraftState;
 use crate::render::atlas::Atlas;
 use crate::render::graph::ShaderGraph;
-use crate::render::pipeline::{BLOCK_ATLAS, ENTITY_ATLAS, WmPipelines};
+use crate::render::pipeline::{WmPipelines, BLOCK_ATLAS, ENTITY_ATLAS};
 use crate::texture::{BindableTexture, TextureHandle, TextureSamplerView};
 
 pub mod mc;
@@ -254,9 +254,9 @@ impl WmRenderer {
 
     pub fn update_surface_size(
         &self,
-        mut surface_config: wgpu::SurfaceConfiguration,
+        mut surface_config: SurfaceConfiguration,
         new_size: WindowSize,
-    ) -> Option<wgpu::SurfaceConfiguration> {
+    ) -> Option<SurfaceConfiguration> {
         if new_size.width == 0 || new_size.height == 0 {
             return None;
         }
@@ -328,9 +328,8 @@ impl WmRenderer {
         output_texture_view: &wgpu::TextureView,
         surface_config: &wgpu::SurfaceConfiguration,
         entity_instances: &'resources HashMap<String, BundledEntityInstances>,
-        clear_color: Option<[f32; 3]>
     ) -> Result<(), wgpu::SurfaceError> {
-        graph.render(self, output_texture_view, surface_config, entity_instances, clear_color.unwrap_or([0.0, 0.0, 0.0]));
+        graph.render(self, output_texture_view, surface_config, entity_instances);
 
         Ok(())
     }

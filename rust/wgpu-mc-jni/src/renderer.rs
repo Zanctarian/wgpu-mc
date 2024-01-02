@@ -42,7 +42,10 @@ use wgpu_mc::{wgpu, WindowSize};
 
 use crate::gl::{ElectrumGeometry, ElectrumVertex, GlTexture, GL_ALLOC};
 use crate::lighting::LIGHTMAP_GLID;
-use crate::{MinecraftResourceManagerAdapter, RenderMessage, WinitWindowWrapper, CHANNELS, MC_STATE, RENDERER, THREAD_POOL, WINDOW, CLEAR_COLOR};
+use crate::{
+    MinecraftRenderState, MinecraftResourceManagerAdapter, RenderMessage, WinitWindowWrapper,
+    CHANNELS, MC_STATE, RENDERER, THREAD_POOL, WINDOW,
+};
 
 pub static MATRICES: Lazy<Mutex<Matrices>> = Lazy::new(|| {
     Mutex::new(Matrices {
@@ -463,9 +466,7 @@ pub fn start_rendering(mut env: JNIEnv, title: JString) {
 
             let entity_instances = ENTITY_INSTANCES.lock();
 
-            let clear_color = **CLEAR_COLOR.load();
-
-            wm.render(&shader_graph, &view, &surface_state.1, &entity_instances, Some(clear_color))
+            wm.render(&shader_graph, &view, &surface_state.1, &entity_instances)
                 .unwrap();
 
             texture.present();

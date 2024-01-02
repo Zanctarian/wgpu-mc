@@ -15,12 +15,12 @@ use serde::de::IntoDeserializer;
 use treeculler::{BVol, Frustum, Vec3, AABB};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
-    BlendComponent, BlendFactor, BlendOperation, BufferUsages, Color, ColorTargetState, CommandEncoderDescriptor, DepthStencilState, Face,
-    FragmentState, FrontFace, LoadOp, Operations, PipelineLayoutDescriptor, PolygonMode,
-    PrimitiveState, PrimitiveTopology, PushConstantRange, RenderPass, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, ShaderStages, StoreOp, SurfaceConfiguration, TextureFormat,
-    VertexBufferLayout, VertexState,
+    BlendComponent, BlendFactor, BlendOperation, BufferUsages, Color, ColorTargetState,
+    CommandEncoderDescriptor, DepthStencilState, Face, FragmentState, FrontFace, LoadOp,
+    Operations, PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology,
+    PushConstantRange, RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderStages, StoreOp,
+    SurfaceConfiguration, TextureFormat, VertexBufferLayout, VertexState,
 };
 
 use crate::mc::chunk::{Chunk, ChunkBuffers, ChunkPos, CHUNK_SECTION_HEIGHT, SECTIONS_PER_CHUNK};
@@ -701,12 +701,8 @@ impl ShaderGraph {
         output_texture: &'graph wgpu::TextureView,
         surface_config: &SurfaceConfiguration,
         entity_instances: &HashMap<String, BundledEntityInstances>,
-        clear_color: [f32; 3]
     ) {
-        puffin::profile_scope!("render");
-
-        let arena = WmArena::new(1_000_000);
-
+        let arena = WmArena::new(1024);
         let mut encoder = wm
             .wgpu_state
             .device
@@ -763,7 +759,7 @@ impl ShaderGraph {
         let frustum = Frustum::from_modelview_projection((projection_matrix * view_matrix).into());
         for (name, config) in (&self.pack.pipelines.pipelines).into_iter() {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some(name),
+                label: None, // TODO maybe use the pipeline name or something? for easier debugging if needed
                 occlusion_query_set: None,
                 timestamp_writes: None,
                 color_attachments: &config
@@ -771,6 +767,18 @@ impl ShaderGraph {
                     .iter()
                     .map(|texture_name| {
                         let resource_definition = self.pack.resources.resources.get(texture_name);
+
+                        //TODO: If the texture resource is defined as being cleared after each frame. Should use a HashMap to replace the should_clear_depth variable
+                        let _clear = matches!(
+                            resource_definition,
+                            Some(&ShorthandResourceConfig::Longhand(LonghandResourceConfig {
+                                typed: TypeResourceConfig::Texture2d {
+                                    clear_after_frame: true,
+                                    ..
+                                },
+                                ..
+                            }))
+                        );
 
                         Some(RenderPassColorAttachment {
                             view: match &texture_name[..] {
@@ -790,16 +798,7 @@ impl ShaderGraph {
                             },
                             resolve_target: None,
                             ops: Operations {
-                                load: if !config.clear {
-                                    LoadOp::Load
-                                } else {
-                                    LoadOp::Clear(Color {
-                                        r: clear_color[0] as f64,
-                                        g: clear_color[1] as f64,
-                                        b: clear_color[2] as f64,
-                                        a: 1.0,
-                                    })
-                                },
+                                load: LoadOp::Load,
                                 store: StoreOp::Store,
                             },
                         })
@@ -838,9 +837,10 @@ impl ShaderGraph {
             match &config.geometry[..] {
                 "wm_geo_terrain" => {
                     let layers = wm.pipelines.load().chunk_layers.load();
+                    let chunks = wm.mc.chunks.loaded_chunks.read();
 
                     for layer in &**layers {
-                        for chunk_swap in wm.mc.chunks.loaded_chunks.iter() {
+                        for (_pos, chunk_swap) in chunks.iter() {
                             let chunk = arena.alloc(chunk_swap.load());
                             let buffers = arena.alloc(chunk.buffers.load_full());
                             let sections = chunk.sections.read();

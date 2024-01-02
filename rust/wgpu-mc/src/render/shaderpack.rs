@@ -91,10 +91,15 @@ pub enum TypeResourceConfig {
     #[serde(rename = "texture_2d")]
     Texture2d {
         #[serde(default)]
-        src: String
+        src: String,
+        #[serde(default)]
+        clear_after_frame: bool,
     },
     #[serde(rename = "texture_depth")]
-    TextureDepth,
+    TextureDepth {
+        #[serde(default)]
+        clear_after_frame: bool,
+    },
     F32 {
         #[serde(default)]
         range: [f32; 2],
@@ -151,9 +156,6 @@ pub struct PipelineConfig {
     pub output: Vec<String>,
 
     pub depth: Option<String>,
-
-    #[serde(default)]
-    pub clear: bool,
 
     #[serde(default)]
     pub uniforms: LinkedHashMap<u64, String>,

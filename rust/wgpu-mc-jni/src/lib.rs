@@ -99,8 +99,6 @@ static MC_STATE: Lazy<ArcSwap<MinecraftRenderState>> = Lazy::new(|| {
     }))
 });
 
-static CLEAR_COLOR: Lazy<ArcSwap<[f32; 3]>> = Lazy::new(|| ArcSwap::new(Arc::new([0.0; 3])));
-
 static THREAD_POOL: Lazy<ThreadPool> =
     Lazy::new(|| ThreadPoolBuilder::new().num_threads(0).build().unwrap());
 
@@ -146,8 +144,6 @@ struct MinecraftBlockstateProvider<'a> {
 
 impl<'a> BlockStateProvider for MinecraftBlockstateProvider<'a> {
     fn get_state(&self, x: i32, y: i16, z: i32) -> ChunkBlockState {
-        puffin::profile_scope!("get state");
-
         //Minecraft technically has negative y values now, but chunk data is indexed [0,384} instead of [-64,256}
         if y >= CHUNK_HEIGHT as i16 || y < 0 {
             return ChunkBlockState::Air;
@@ -443,17 +439,22 @@ pub fn bake_chunk(x: i32, z: i32) {
     THREAD_POOL.spawn(move || {
         let wm = RENDERER.get().unwrap();
 
-    let bm = wm.mc.block_manager.read();
+        {
+            {
+                let loaded_chunks = wm.mc.chunks.loaded_chunks.read();
+                if !loaded_chunks.contains_key(&[x, z]) {
+                    drop(loaded_chunks);
+                    let mut loaded_chunks = wm.mc.chunks.loaded_chunks.write();
+                    loaded_chunks.insert([x, z], ArcSwap::new(Arc::new(Chunk::new([x, z]))));
+                }
+            }
 
-    {
-        if !wm.mc.chunks.loaded_chunks.contains_key(&[x, z]) {
-            wm.mc.chunks.loaded_chunks.insert([x, z], ArcSwap::new(Arc::new(Chunk::new([x, z]))));
-        }
-    }
+            let bm = wm.mc.block_manager.read();
+            let loaded_chunks = wm.mc.chunks.loaded_chunks.read();
 
-    let (chunk, center, neighbors) = {
-        let chunk = wm.mc.chunks.loaded_chunks.get(&[x, z]).unwrap().load_full();
-        let chunks = CHUNKS.read();
+            let chunk = loaded_chunks.get(&[x, z]).unwrap().load();
+
+            let chunks = CHUNKS.read();
 
             let center = chunks.get(&[x, z]).unwrap();
 
@@ -486,7 +487,8 @@ pub fn clearChunks(_env: JNIEnv, _class: JClass) {
     THREAD_POOL.spawn(|| {
         let wm = RENDERER.get().unwrap();
 
-        wm.mc.chunks.loaded_chunks.clear();
+        let mut chunks = wm.mc.chunks.loaded_chunks.write();
+        chunks.clear();
     });
 }
 
@@ -1070,7 +1072,7 @@ pub fn getWindowHeight(_env: JNIEnv, _class: JClass) -> jint {
 
 #[jni_fn("dev.birb.wgpu.rust.WgpuNative")]
 pub fn clearColor(_env: JNIEnv, _class: JClass, r: jfloat, g: jfloat, b: jfloat) {
-    CLEAR_COLOR.store(Arc::new([r, g, b]));
+    GL_COMMANDS.write().0.push(GLCommand::ClearColor([r, g, b]));
 }
 
 #[jni_fn("dev.birb.wgpu.rust.WgpuNative")]
